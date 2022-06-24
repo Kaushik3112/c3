@@ -9,6 +9,10 @@ from c3.signal.gates import Instruction
 from c3.c3objs import Quantity, C3obj, hjson_encode
 from c3.utils.tf_utils import tf_convolve, tf_convolve_legacy
 
+from c3.generator.Noise_PSD import noise_spectrum
+from c3.generator.Noise_PSD import PSD_gen
+from c3.generator.Noise_PSD import Sig_gen
+
 devices = dict()
 
 
@@ -891,9 +895,44 @@ class Additive_Noise(Device):
         if "noise_amp" in props:
             self.params["noise_amp"] = props.pop("noise_amp")
 
+    def get_noise(self, resolution=0):
+        noise_amp = self.params["noise_amp"].get_value()
+        return noise_amp * np.random.normal(size=resolution, loc=0.0, scale=1.0)
+
+    def process(self, instr, chan, signal: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Distort signal by adding noise."""
+        out_signal = {"ts": signal[0]["ts"]}
+        for k, sig in signal[0].items():
+            if k != "ts" and "noise" not in k:
+                noise = self.get_noise()
+                noise_key = "noise" + ("-" + k if k != "values" else "")
+                out_signal[noise_key] = noise
+
+                out_signal[k] = sig + noise
+        self.signal = out_signal
+        return self.signal
+
+@dev_reg_deco
+class custom_noise(Device):
+    """A custom noise added to the signal"""
+
+    def __init__(self, **props):
+        super().__init__(**props)
+        self.inputs = props.pop("inputs", 1)
+        self.outputs = props.pop("outputs", 1)
+        self.signal = None
+        if "noise_amp" in props:
+            self.params["noise_amp"] = props.pop("noise_amp")
+
     def get_noise(self, sig):
         noise_amp = self.params["noise_amp"].get_value()
-        return noise_amp * np.random.normal(size=tf.shape(sig), loc=0.0, scale=1.0)
+        len = tf.shape(sig)
+        n_max = 20e6
+        freqs = tf.linspace(-n_max,n_max,len)
+        PSD = noise_spectrum(freqs)
+        # PSD = PSD_gen(PSD)
+        beta = Sig_gen(PSD)
+        return beta
 
     def process(self, instr, chan, signal: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Distort signal by adding noise."""
@@ -931,26 +970,41 @@ class Pink_Noise(Additive_Noise):
     """Device creating pink noise, i.e. 1/f noise."""
 
     def __init__(self, **props):
+        self.shots = props.pop("shots", 1)
         super().__init__(**props)
         self.params["bfl_num"] = props.pop(
             "bfl_num", Quantity(value=5, min_val=1, max_val=10)
         )
+        self.precompute(*props)
 
-    def get_noise(self, sig):
-        noise_amp = self.params["noise_amp"].get_value().numpy()
-        bfl_num = np.int(self.params["bfl_num"].get_value().numpy())
-        noise = []
-        bfls = 2 * np.random.randint(2, size=bfl_num) - 1
-        num_steps = len(sig)
-        flip_rates = np.logspace(
-            0, np.log(num_steps), num=bfl_num + 1, endpoint=True, base=10.0
-        )
-        for step in range(num_steps):
-            for indx in range(bfl_num):
-                if np.floor(np.random.random() * flip_rates[indx + 1]) == 0:
-                    bfls[indx] = -bfls[indx]
-            noise.append(np.sum(bfls) * noise_amp)
-        return noise
+    def precompute(self, *props):
+        num_steps = self.resolution
+        n_shots = self.shots
+        self.slices = num_steps
+        noises = []
+        for shot in range(n_shots):
+            noise_amp = self.params["noise_amp"].get_value().numpy()
+            bfl_num = np.int(self.params["bfl_num"].get_value().numpy())
+            noise = []
+            bfls = 2 * np.random.randint(2, size=bfl_num) - 1
+            flip_rates = np.logspace(
+                0, np.log(num_steps), num=bfl_num + 1, endpoint=True, base=10.0
+            )
+            for __ in range(num_steps):
+                for indx in range(bfl_num):
+                    if np.floor(np.random.random() * flip_rates[indx + 1]) == 0:
+                        bfls[indx] = -bfls[indx]
+                noise.append(np.sum(bfls) * noise_amp)
+            noises.append(noise)
+            if shot == 0:
+                self.set_noise(tf.constant(noise, dtype=tf.float64))
+        self.noises = np.reshape(noises, (n_shots, num_steps))
+
+    def set_noise(self, noise):
+        self.noise = noise
+
+    def get_noise(self):
+        return self.noise
 
 
 @dev_reg_deco

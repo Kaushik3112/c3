@@ -78,7 +78,7 @@ class Experiment:
         looking it up in the library.
         """
         if prop_method is None:
-            self.propagation = unitary_provider["pwc"]
+            self.propagation = unitary_provider["pwc_lind"]
             if self.pmap is not None:
                 self._compute_folding_stack()
         elif isinstance(prop_method, str):
