@@ -907,8 +907,8 @@ class Additive_Noise(Device):
                 noise = self.get_noise()
                 noise_key = "noise" + ("-" + k if k != "values" else "")
                 out_signal[noise_key] = noise
-
-                out_signal[k] = sig + noise
+                # print(sig.shape, k)
+                out_signal[k] = sig + noise[:sig.shape[0]]
         self.signal = out_signal
         return self.signal
 
